@@ -7,7 +7,10 @@ Designed specifically for Pop!_OS / Linux (X11 & Wayland):
   to `/dev/uinput`, completing kernel key injection in < 0.25 milliseconds!
 """
 from __future__ import annotations
-import fcntl
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # type: ignore
 import glob
 import os
 import select
@@ -45,7 +48,7 @@ UI_DEV_DESTROY = 0x5502
 EVIOCGRAB = 0x40044590
 EVIOCGNAME_256 = 0x81004506
 
-INPUT_EVENT_FMT = "llHHi"
+INPUT_EVENT_FMT = "qqHHi"
 INPUT_EVENT_SIZE = struct.calcsize(INPUT_EVENT_FMT)
 
 # Linux evdev keycode <-> ASCII character tables
@@ -82,10 +85,10 @@ class LinuxUinputMutator(TextMutatorPort):
     def __init__(self, dry_run: bool = False) -> None:
         self.dry_run = dry_run
         self.uinput_fd: int | None = None
-        if not dry_run and os.path.exists("/dev/uinput"):
+        if not dry_run and fcntl is not None and os.path.exists("/dev/uinput"):
             try:
                 self._init_uinput_device()
-            except PermissionError:
+            except OSError:
                 self.uinput_fd = None
 
     def _init_uinput_device(self) -> None:
