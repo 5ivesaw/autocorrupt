@@ -1,0 +1,14 @@
+[Unit]
+Description=AutoCorrupt 32-Slice Deterministic GOFAI Background Keyboard Daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -m autocorrupt daemon --device auto
+Restart=on-failure
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

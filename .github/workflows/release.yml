@@ -1,0 +1,148 @@
+name: Build, Verify & Release AutoCorrupt Multi-OS
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verify-32-slices:
+    name: Verify 32 Slices & Sub-ms Benchmark (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Compile Binary Mmap Lexicon
+        run: python -m autocorrupt compile-lexicon --out autocorrupt/lexicon.bin
+
+      - name: Run 32-Slice Unit & Integration Test Suite
+        run: python -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: Run Golden GOFAI Self-Test Gate
+        run: python -m autocorrupt self-test
+
+      - name: Run Sub-Millisecond Latency Benchmark
+        run: python -m autocorrupt benchmark
+
+  build-and-package:
+    name: Build Standalone Release Binaries (${{ matrix.target.name }})
+    needs: verify-32-slices
+    runs-on: ${{ matrix.target.os }}
+    strategy:
+      matrix:
+        target:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            bin_name: autocorrupt-linux-x86_64
+          - name: windows-x86_64
+            os: windows-latest
+            bin_name: autocorrupt-windows-x86_64.exe
+          - name: macos-arm64
+            os: macos-latest
+            bin_name: autocorrupt-macos-arm64
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PyInstaller
+        run: pip install pyinstaller
+
+      - name: Compile Binary Mmap Lexicon
+        run: python -m autocorrupt compile-lexicon --out autocorrupt/lexicon.bin
+
+      - name: Build Standalone Binary via PyInstaller
+        run: |
+          pyinstaller --onefile --name ${{ matrix.target.bin_name }} autocorrupt/__main__.py
+
+      - name: Package Platform Release Archive
+        shell: bash
+        run: |
+          mkdir -p dist/release-${{ matrix.target.name }}
+          cp dist/${{ matrix.target.bin_name }}* dist/release-${{ matrix.target.name }}/
+          cp autocorrupt/lexicon.bin dist/release-${{ matrix.target.name }}/
+          cp README.md dist/release-${{ matrix.target.name }}/
+          if [ "${{ matrix.target.name }}" = "linux-x86_64" ]; then
+            cp -r systemd dist/release-${{ matrix.target.name }}/
+          fi
+          cd dist
+          tar -czf autocorrupt-${{ matrix.target.name }}.tar.gz release-${{ matrix.target.name }}
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target.name }}
+          path: dist/autocorrupt-${{ matrix.target.name }}.tar.gz
+
+  publish-release:
+    name: Publish Latest GitHub Release & Tag
+    needs: build-and-package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download All Platform Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release_assets
+          merge-multiple: true
+
+      - name: Build Source & Precompiled Lexicon Archive
+        run: |
+          python3 -m autocorrupt compile-lexicon --out autocorrupt/lexicon.bin
+          tar -czf release_assets/autocorrupt-full-source-and-lexicon.tar.gz \
+            autocorrupt tests systemd pyproject.toml README.md
+
+      - name: Determine Release Tag
+        id: tag
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            TAG_NAME="${GITHUB_REF#refs/tags/}"
+          else
+            TAG_NAME="v1.0.${GITHUB_RUN_NUMBER}"
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -f "${TAG_NAME}"
+            git push origin "${TAG_NAME}" --force
+          fi
+          echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Create and Publish Latest GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag_name }}
+          name: "AutoCorrupt GOFAI ${{ steps.tag.outputs.tag_name }}"
+          body: |
+            ## AutoCorrupt GOFAI Engine (${{ steps.tag.outputs.tag_name }})
+            Deterministic 32-slice Symbolic GOFAI background word-corruption engine with sub-millisecond Double-Array Trie lookup and Retrospective Time-Travel SentenceTape editing.
+            
+            ### Included Release Assets
+            - `autocorrupt-linux-x86_64.tar.gz` — Standalone Pop!_OS / Linux `evdev` + `uinput` daemon binary, `lexicon.bin`, and `systemd` service
+            - `autocorrupt-windows-x86_64.tar.gz` — Standalone Windows `WH_KEYBOARD_LL` + `SendInput` binary
+            - `autocorrupt-macos-arm64.tar.gz` — Standalone macOS Quartz `CGEventTap` binary
+            - `autocorrupt-full-source-and-lexicon.tar.gz` — Complete 32-slice source tree + pre-compiled `lexicon.bin`
+          draft: false
+          prerelease: false
+          make_latest: true
+          files: release_assets/*.tar.gz

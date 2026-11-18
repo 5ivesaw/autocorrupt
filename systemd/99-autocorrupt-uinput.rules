@@ -1,0 +1,3 @@
+# Allow members of the 'input' group to read /dev/input/event* and write to /dev/uinput without root
+KERNEL=="uinput", MODE="0660", GROUP="input", OPTIONS+="static_node=uinput"
+SUBSYSTEM=="input", KERNEL=="event*", MODE="0660", GROUP="input"
